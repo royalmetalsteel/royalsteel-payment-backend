@@ -64,12 +64,65 @@ app.get("/", (req, res) => {
   });
 });
 
+
+
+const trustedProducts = {
+  1: { name: "Butterfly Bed", price: 49999 },
+  2: { name: "Royal Sofa", price: 7999 },
+  3: { name: "King Chair", price: 3999 },
+  4: { name: "Dining Table", price: 6999 }
+};
+
+
+
+
 // Create a Razorpay order
+
 app.post("/create-order", async (req, res) => {
   try {
-    const { amount, receipt } = req.body || {};
+    const { items, receipt } = req.body || {};
 
-    // Amount must be a whole number of paise
+    if (
+      !Array.isArray(items) ||
+      items.length < 1 ||
+      items.length > 20
+    ) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid cart"
+      });
+    }
+
+    let totalRupees = 0;
+
+    for (const item of items) {
+      if (
+        !item ||
+        !Number.isSafeInteger(item.productId) ||
+        !Number.isSafeInteger(item.quantity) ||
+        item.quantity < 1 ||
+        item.quantity > 20
+      ) {
+        return res.status(400).json({
+          success: false,
+          message: "Invalid product or quantity"
+        });
+      }
+
+      const product = trustedProducts[item.productId];
+
+      if (!product) {
+        return res.status(400).json({
+          success: false,
+          message: "Unknown product"
+        });
+      }
+
+      totalRupees += product.price * item.quantity;
+    }
+
+    const amount = totalRupees * 100;
+
     if (
       !Number.isSafeInteger(amount) ||
       amount < 100 ||
@@ -77,9 +130,45 @@ app.post("/create-order", async (req, res) => {
     ) {
       return res.status(400).json({
         success: false,
-        message: "Invalid amount"
+        message: "Invalid total amount"
       });
     }
+
+    const order = await razorpay.orders.create({
+      amount,
+      currency: "INR",
+      receipt:
+        typeof receipt === "string" &&
+        /^[a-zA-Z0-9_-]{1,40}$/.test(receipt)
+          ? receipt
+          : `rs_${crypto.randomUUID().replace(/-/g, "").slice(0, 32)}`
+    });
+
+    return res.json({
+      success: true,
+      key_id: keyId,
+      order: {
+        id: order.id,
+        amount: order.amount,
+        currency: order.currency
+      }
+    });
+  } catch (error) {
+    console.error(
+      "Order creation failed:",
+      error?.error?.description ||
+      error?.description ||
+      error?.message ||
+      "Unknown error"
+    );
+
+    return res.status(500).json({
+      success: false,
+      message: "Could not create order"
+    });
+  }
+});
+
 
     // IMPORTANT:
     // Before live sales, calculate the amount on the server
