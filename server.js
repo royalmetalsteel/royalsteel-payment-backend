@@ -50,7 +50,6 @@ const keySecret = process.env.RAZORPAY_KEY_SECRET;
 
 if (!keyId || !keySecret) {
   console.error("Razorpay environment variables are missing.");
-  process.exit(1);
 }
 
 const razorpay = new Razorpay({
