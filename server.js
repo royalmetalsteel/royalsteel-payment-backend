@@ -106,7 +106,13 @@ app.post("/create-order", async (req, res) => {
       }
     });
   } catch (error) {
-    console.error("Order creation failed:", error.message);
+console.error(
+  "Order creation failed:",
+  error?.error?.description ||
+  error?.description ||
+  error?.message ||
+  JSON.stringify(error)
+);
     return res.status(500).json({
       success: false,
       message: "Could not create order"
