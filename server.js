@@ -1,10 +1,11 @@
+
 const express = require("express");
 const Razorpay = require("razorpay");
 const crypto = require("crypto");
 
 const app = express();
-app.disable("x-powered-by");
 
+app.disable("x-powered-by");
 app.use(express.json({ limit: "10kb" }));
 
 // Allow requests only from your website
@@ -43,8 +44,7 @@ app.use((req, res, next) => {
   next();
 });
 
-
-// Secret keys must be configured in hosting environment variables
+// Razorpay environment variables
 const keyId = process.env.RAZORPAY_KEY_ID;
 const keySecret = process.env.RAZORPAY_KEY_SECRET;
 
@@ -52,11 +52,14 @@ if (!keyId || !keySecret) {
   console.error("Razorpay environment variables are missing.");
 }
 
-const razorpay = new Razorpay({
-  key_id: keyId,
-  key_secret: keySecret
-});
+const razorpay = keyId && keySecret
+  ? new Razorpay({
+      key_id: keyId,
+      key_secret: keySecret
+    })
+  : null;
 
+// Health check
 app.get("/", (req, res) => {
   res.json({
     service: "ROYALSTEEL Payment Backend",
@@ -64,8 +67,8 @@ app.get("/", (req, res) => {
   });
 });
 
-
-
+// Trusted product catalogue
+// Prices are controlled by the server.
 const trustedProducts = {
   1: { name: "Butterfly Bed", price: 49999 },
   2: { name: "Royal Sofa", price: 7999 },
@@ -73,13 +76,16 @@ const trustedProducts = {
   4: { name: "Dining Table", price: 6999 }
 };
 
-
-
-
 // Create a Razorpay order
-
 app.post("/create-order", async (req, res) => {
   try {
+    if (!razorpay) {
+      return res.status(503).json({
+        success: false,
+        message: "Payment service is not configured"
+      });
+    }
+
     const { items, receipt } = req.body || {};
 
     if (
@@ -153,6 +159,7 @@ app.post("/create-order", async (req, res) => {
         currency: order.currency
       }
     });
+
   } catch (error) {
     console.error(
       "Order creation failed:",
@@ -169,53 +176,16 @@ app.post("/create-order", async (req, res) => {
   }
 });
 
-
-   // IMPORTANT:
-// Before live sales, calculate the amount on the server
-// using your trusted product catalogue and cart.
-// Never trust a price supplied by the browser.
-
-const order = await razorpay.orders.create({
-  // ...
-});
-
-    const order = await razorpay.orders.create({
-      amount,
-      currency: "INR",
-      receipt:
-        typeof receipt === "string" &&
-        /^[a-zA-Z0-9_-]{1,40}$/.test(receipt)
-          ? receipt
-          : `rs_${crypto.randomUUID().replace(/-/g, "").slice(0, 32)}`
-    });
-
-    return res.json({
-      success: true,
-      key_id: keyId,
-      order: {
-        id: order.id,
-        amount: order.amount,
-        currency: order.currency
-      }
-    });
-  } catch (error) {
-console.error(
-  "Order creation failed:",
-  error?.error?.description ||
-  error?.description ||
-  error?.message ||
-  JSON.stringify(error)
-);
-    return res.status(500).json({
-      success: false,
-      message: "Could not create order"
-    });
-  }
-});
-
-// Verify the Razorpay payment signature
+// Verify Razorpay payment signature
 app.post("/verify-payment", async (req, res) => {
   try {
+    if (!razorpay) {
+      return res.status(503).json({
+        success: false,
+        message: "Payment service is not configured"
+      });
+    }
+
     const {
       razorpay_order_id,
       razorpay_payment_id,
@@ -236,9 +206,12 @@ app.post("/verify-payment", async (req, res) => {
       });
     }
 
-    // Verify against the order created by Razorpay
-    const order = await razorpay.orders.fetch(razorpay_order_id);
+    // Fetch Razorpay order
+    const order = await razorpay.orders.fetch(
+      razorpay_order_id
+    );
 
+    // Verify signature
     const expectedSignature = crypto
       .createHmac("sha256", keySecret)
       .update(`${order.id}|${razorpay_payment_id}`)
@@ -263,11 +236,12 @@ app.post("/verify-payment", async (req, res) => {
       });
     }
 
-    // Also check the payment belongs to this order and is captured.
+    // Fetch payment details
     const payment = await razorpay.payments.fetch(
       razorpay_payment_id
     );
 
+    // Confirm payment is captured and matches order
     if (
       payment.order_id !== order.id ||
       payment.status !== "captured" ||
@@ -288,8 +262,13 @@ app.post("/verify-payment", async (req, res) => {
       payment_id: payment.id,
       order_id: order.id
     });
+
   } catch (error) {
-    console.error("Payment verification failed:", error.message);
+    console.error(
+      "Payment verification failed:",
+      error?.message || "Unknown error"
+    );
+
     return res.status(500).json({
       success: false,
       message: "Could not verify payment"
