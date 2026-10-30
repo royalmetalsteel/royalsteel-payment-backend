@@ -170,10 +170,14 @@ app.post("/create-order", async (req, res) => {
 });
 
 
-    // IMPORTANT:
-    // Before live sales, calculate the amount on the server
-    // using your trusted product catalogue and cart.
-    // Never trust a price supplied by the browser.
+   // IMPORTANT:
+// Before live sales, calculate the amount on the server
+// using your trusted product catalogue and cart.
+// Never trust a price supplied by the browser.
+
+const order = await razorpay.orders.create({
+  // ...
+});
 
     const order = await razorpay.orders.create({
       amount,
