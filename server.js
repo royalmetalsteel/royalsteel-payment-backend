@@ -6,43 +6,6 @@ const crypto = require("crypto");
 const app = express();
 
 app.disable("x-powered-by");
-app.use(express.json({ limit: "10kb" }));
-
-// Allow requests only from your website
-const allowedOrigins = new Set([
-  "https://royalsteel.in",
-  "https://www.royalsteel.in"
-]);
-
-app.use((req, res, next) => {
-  const origin = req.headers.origin;
-
-  if (origin && allowedOrigins.has(origin)) {
-    res.setHeader("Access-Control-Allow-Origin", origin);
-    res.setHeader("Vary", "Origin");
-    res.setHeader(
-      "Access-Control-Allow-Methods",
-      "GET, POST, OPTIONS"
-    );
-    res.setHeader(
-      "Access-Control-Allow-Headers",
-      "Content-Type"
-    );
-  }
-
-  if (req.method === "OPTIONS") {
-    if (origin && !allowedOrigins.has(origin)) {
-      return res.sendStatus(403);
-    }
-    return res.sendStatus(204);
-  }
-
-  if (origin && !allowedOrigins.has(origin)) {
-    return res.sendStatus(403);
-  }
-
-  next();
-});
 
 // Razorpay environment variables
 const keyId = process.env.RAZORPAY_KEY_ID;
@@ -59,6 +22,46 @@ const razorpay = keyId && keySecret
     })
   : null;
 
+// CORS configuration
+const allowedOrigins = new Set([
+  "https://royalsteel.in",
+  "https://www.royalsteel.in"
+]);
+
+app.use((req, res, next) => {
+  const origin = req.headers.origin;
+
+  if (origin && !allowedOrigins.has(origin)) {
+    return res.status(403).json({
+      success: false,
+      message: "Origin not allowed"
+    });
+  }
+
+  if (origin) {
+    res.setHeader("Access-Control-Allow-Origin", origin);
+    res.setHeader("Vary", "Origin");
+  }
+
+  res.setHeader(
+    "Access-Control-Allow-Methods",
+    "GET, POST, OPTIONS"
+  );
+
+  res.setHeader(
+    "Access-Control-Allow-Headers",
+    "Content-Type"
+  );
+
+  if (req.method === "OPTIONS") {
+    return res.sendStatus(204);
+  }
+
+  next();
+});
+
+app.use(express.json({ limit: "10kb" }));
+
 // Health check
 app.get("/", (req, res) => {
   res.json({
@@ -68,7 +71,6 @@ app.get("/", (req, res) => {
 });
 
 // Trusted product catalogue
-// Prices are controlled by the server.
 const trustedProducts = {
   1: { name: "Butterfly Bed", price: 49999 },
   2: { name: "Royal Sofa", price: 7999 },
@@ -76,7 +78,7 @@ const trustedProducts = {
   4: { name: "Dining Table", price: 6999 }
 };
 
-// Create a Razorpay order
+// Create Razorpay order
 app.post("/create-order", async (req, res) => {
   try {
     if (!razorpay) {
@@ -176,7 +178,7 @@ app.post("/create-order", async (req, res) => {
   }
 });
 
-// Verify Razorpay payment signature
+// Verify Razorpay payment
 app.post("/verify-payment", async (req, res) => {
   try {
     if (!razorpay) {
@@ -206,12 +208,10 @@ app.post("/verify-payment", async (req, res) => {
       });
     }
 
-    // Fetch Razorpay order
     const order = await razorpay.orders.fetch(
       razorpay_order_id
     );
 
-    // Verify signature
     const expectedSignature = crypto
       .createHmac("sha256", keySecret)
       .update(`${order.id}|${razorpay_payment_id}`)
@@ -236,12 +236,10 @@ app.post("/verify-payment", async (req, res) => {
       });
     }
 
-    // Fetch payment details
     const payment = await razorpay.payments.fetch(
       razorpay_payment_id
     );
 
-    // Confirm payment is captured and matches order
     if (
       payment.order_id !== order.id ||
       payment.status !== "captured" ||
@@ -251,7 +249,7 @@ app.post("/verify-payment", async (req, res) => {
       return res.status(400).json({
         success: false,
         verified: false,
-        message: "Payment is not captured or details do not match"
+        message: "Payment details do not match"
       });
     }
 
