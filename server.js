@@ -45,7 +45,7 @@ app.use((req, res, next) => {
 });
 
 // Razorpay environment variables
-const key_id: keyId,
+key_id: keyId,
 const keySecret = process.env.RAZORPAY_KEY_SECRET;
 
 if (!keyId || !keySecret) {
