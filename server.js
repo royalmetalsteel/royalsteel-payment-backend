@@ -7,13 +7,11 @@ const app = express();
 
 app.disable("x-powered-by");
 
-// Razorpay environment variables
+// Environment variables
 const keyId = process.env.RAZORPAY_KEY_ID;
 const keySecret = process.env.RAZORPAY_KEY_SECRET;
-
-if (!keyId || !keySecret) {
-  console.error("Razorpay environment variables are missing.");
-}
+const supabaseUrl = process.env.SUPABASE_URL;
+const supabaseSecret = process.env.SUPABASE_SECRET_KEY;
 
 const razorpay = keyId && keySecret
   ? new Razorpay({
@@ -22,7 +20,7 @@ const razorpay = keyId && keySecret
     })
   : null;
 
-// CORS configuration
+// CORS
 const allowedOrigins = new Set([
   "https://royalsteel.in",
   "https://www.royalsteel.in"
@@ -62,6 +60,43 @@ app.use((req, res, next) => {
 
 app.use(express.json({ limit: "10kb" }));
 
+// Supabase configuration
+function checkConfiguration() {
+  if (!razorpay) {
+    throw new Error("Razorpay is not configured");
+  }
+
+  if (!supabaseUrl || !supabaseSecret) {
+    throw new Error("Supabase is not configured");
+  }
+}
+
+// Supabase REST helper
+async function supabaseRequest(path, options = {}) {
+  const response = await fetch(
+    `${supabaseUrl}/rest/v1/${path}`,
+    {
+      ...options,
+      headers: {
+        "apikey": supabaseSecret,
+        "Authorization": `Bearer ${supabaseSecret}`,
+        "Content-Type": "application/json",
+        "Prefer": "return=representation",
+        ...(options.headers || {})
+      }
+    }
+  );
+
+  const data = await response.json().catch(() => null);
+
+  if (!response.ok) {
+    console.error("Supabase request failed:", response.status);
+    throw new Error("Database operation failed");
+  }
+
+  return data;
+}
+
 // Health check
 app.get("/", (req, res) => {
   res.json({
@@ -78,17 +113,67 @@ const trustedProducts = {
   4: { name: "Dining Table", price: 6999 }
 };
 
-// Create Razorpay order
+// Create Razorpay order and save pending order
 app.post("/create-order", async (req, res) => {
   try {
-    if (!razorpay) {
-      return res.status(503).json({
+    checkConfiguration();
+
+    const {
+      items,
+      receipt,
+      customerName,
+      customerPhone,
+      customerEmail,
+      deliveryAddress,
+      notes
+    } = req.body || {};
+
+    if (
+      typeof customerName !== "string" ||
+      customerName.trim().length < 2 ||
+      customerName.trim().length > 100
+    ) {
+      return res.status(400).json({
         success: false,
-        message: "Payment service is not configured"
+        message: "Valid customer name is required"
       });
     }
 
-    const { items, receipt } = req.body || {};
+    const phone = String(customerPhone || "").replace(/\D/g, "");
+
+    if (!/^\d{10,15}$/.test(phone)) {
+      return res.status(400).json({
+        success: false,
+        message: "Valid customer phone is required"
+      });
+    }
+
+    if (
+      customerEmail &&
+      (
+        typeof customerEmail !== "string" ||
+        customerEmail.length > 150 ||
+        !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(customerEmail)
+      )
+    ) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid email address"
+      });
+    }
+
+    if (
+      deliveryAddress &&
+      (
+        typeof deliveryAddress !== "string" ||
+        deliveryAddress.length > 1000
+      )
+    ) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid delivery address"
+      });
+    }
 
     if (
       !Array.isArray(items) ||
@@ -102,6 +187,7 @@ app.post("/create-order", async (req, res) => {
     }
 
     let totalRupees = 0;
+    const orderItems = [];
 
     for (const item of items) {
       if (
@@ -127,6 +213,12 @@ app.post("/create-order", async (req, res) => {
       }
 
       totalRupees += product.price * item.quantity;
+
+      orderItems.push({
+        name: product.name,
+        quantity: item.quantity,
+        price: product.price
+      });
     }
 
     const amount = totalRupees * 100;
@@ -152,6 +244,37 @@ app.post("/create-order", async (req, res) => {
           : `rs_${crypto.randomUUID().replace(/-/g, "").slice(0, 32)}`
     });
 
+    // Save pending order in Supabase
+    const dbOrder = await supabaseRequest("orders", {
+      method: "POST",
+      body: JSON.stringify([{
+        customer_name: customerName.trim(),
+        customer_phone: phone,
+        customer_email: customerEmail || null,
+        delivery_address: deliveryAddress || null,
+        product_name: orderItems.map(
+          item => `${item.name} x ${item.quantity}`
+        ).join(", "),
+        quantity: orderItems.reduce(
+          (sum, item) => sum + item.quantity, 0
+        ),
+        unit_price: orderItems.length === 1
+          ? orderItems[0].price
+          : 0,
+        total_amount: totalRupees,
+        order_status: "pending",
+        payment_status: "unpaid",
+        razorpay_order_id: order.id,
+        notes: typeof notes === "string"
+          ? notes.slice(0, 1000)
+          : null
+      }])
+    });
+
+    if (!dbOrder || !dbOrder.length) {
+      throw new Error("Order was not saved");
+    }
+
     return res.json({
       success: true,
       key_id: keyId,
@@ -159,34 +282,27 @@ app.post("/create-order", async (req, res) => {
         id: order.id,
         amount: order.amount,
         currency: order.currency
-      }
+      },
+      database_order_id: dbOrder[0].id
     });
 
   } catch (error) {
     console.error(
       "Order creation failed:",
-      error?.error?.description ||
-      error?.description ||
-      error?.message ||
-      "Unknown error"
+      error.message || "Unknown error"
     );
 
     return res.status(500).json({
       success: false,
-      message: "Could not create order"
+      message: "Could not create and save order"
     });
   }
 });
 
-// Verify Razorpay payment
+// Verify payment and update Supabase
 app.post("/verify-payment", async (req, res) => {
   try {
-    if (!razorpay) {
-      return res.status(503).json({
-        success: false,
-        message: "Payment service is not configured"
-      });
-    }
+    checkConfiguration();
 
     const {
       razorpay_order_id,
@@ -208,13 +324,10 @@ app.post("/verify-payment", async (req, res) => {
       });
     }
 
-    const order = await razorpay.orders.fetch(
-      razorpay_order_id
-    );
-
+    // Verify signature
     const expectedSignature = crypto
       .createHmac("sha256", keySecret)
-      .update(`${order.id}|${razorpay_payment_id}`)
+      .update(`${razorpay_order_id}|${razorpay_payment_id}`)
       .digest();
 
     const receivedSignature = Buffer.from(
@@ -236,6 +349,10 @@ app.post("/verify-payment", async (req, res) => {
       });
     }
 
+    const order = await razorpay.orders.fetch(
+      razorpay_order_id
+    );
+
     const payment = await razorpay.payments.fetch(
       razorpay_payment_id
     );
@@ -253,10 +370,48 @@ app.post("/verify-payment", async (req, res) => {
       });
     }
 
+    // Find matching saved order
+    const query = new URLSearchParams({
+      select: "id",
+      razorpay_order_id: `eq.${razorpay_order_id}`,
+      limit: "1"
+    });
+
+    const existing = await supabaseRequest(
+      `orders?${query.toString()}`,
+      { method: "GET" }
+    );
+
+    if (!existing || existing.length !== 1) {
+      return res.status(404).json({
+        success: false,
+        verified: false,
+        message: "Saved order not found"
+      });
+    }
+
+    // Mark order as paid
+    const updateQuery = new URLSearchParams({
+      razorpay_order_id: `eq.${razorpay_order_id}`
+    });
+
+    await supabaseRequest(
+      `orders?${updateQuery.toString()}`,
+      {
+        method: "PATCH",
+        body: JSON.stringify({
+          payment_status: "paid",
+          order_status: "confirmed",
+          payment_id: payment.id,
+          updated_at: new Date().toISOString()
+        })
+      }
+    );
+
     return res.json({
       success: true,
       verified: true,
-      message: "Payment verified successfully",
+      message: "Payment verified and order saved",
       payment_id: payment.id,
       order_id: order.id
     });
@@ -264,7 +419,7 @@ app.post("/verify-payment", async (req, res) => {
   } catch (error) {
     console.error(
       "Payment verification failed:",
-      error?.message || "Unknown error"
+      error.message || "Unknown error"
     );
 
     return res.status(500).json({
