@@ -327,7 +327,9 @@ app.post("/create-order", async (req, res) => {
 // Save WhatsApp cart orders as pending customer-owned orders for tracking.
 app.post("/create-contact-order", async (req, res) => {
   try {
-    checkConfiguration();
+    if (!supabaseUrl || !supabaseSecret || !supabasePublishableKey) {
+      throw new Error("Supabase is not configured");
+    }
     const authUser = await getAuthenticatedUser(req);
     if (!authUser) {
       return res.status(401).json({ success: false, message: "Please sign in with your verified email first." });
