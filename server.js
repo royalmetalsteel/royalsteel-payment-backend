@@ -111,7 +111,10 @@ async function getAuthenticatedUser(req) {
   });
   if (!response.ok) return null;
   const user = await response.json().catch(() => null);
-  if (!user || !user.id || !user.email || !user.email_confirmed_at) return null;
+  if (!user || !user.id) return null;
+  const emailVerified = Boolean(user.email && user.email_confirmed_at);
+  const phoneVerified = Boolean(user.phone && user.phone_confirmed_at);
+  if (!emailVerified && !phoneVerified) return null;
   return user;
 }
 
@@ -272,7 +275,7 @@ app.post("/create-order", async (req, res) => {
       body: JSON.stringify([{
         customer_name: customerName.trim(),
         customer_phone: phone,
-        customer_email: authUser.email,
+        customer_email: authUser.email || null,
         user_id: authUser.id,
         delivery_address: deliveryAddress || null,
         product_name: orderItems.map(
