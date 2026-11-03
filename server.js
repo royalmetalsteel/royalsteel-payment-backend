@@ -12,6 +12,7 @@ const keyId = process.env.RAZORPAY_KEY_ID;
 const keySecret = process.env.RAZORPAY_KEY_SECRET;
 const supabaseUrl = process.env.SUPABASE_URL;
 const supabaseSecret = process.env.SUPABASE_SECRET_KEY;
+const supabasePublishableKey = process.env.SUPABASE_PUBLISHABLE_KEY || process.env.SUPABASE_ANON_KEY || "sb_publishable_aYvm5zJJRwM7qUaXQht-PQ_Whw5ZCzp";
 
 const razorpay = keyId && keySecret
   ? new Razorpay({
@@ -48,7 +49,7 @@ app.use((req, res, next) => {
 
   res.setHeader(
     "Access-Control-Allow-Headers",
-    "Content-Type"
+    "Content-Type, Authorization"
   );
 
   if (req.method === "OPTIONS") {
@@ -97,6 +98,23 @@ async function supabaseRequest(path, options = {}) {
   return data;
 }
 
+// Verify the signed-in customer with Supabase Auth. Never trust a browser-supplied user ID.
+async function getAuthenticatedUser(req) {
+  const header = req.headers.authorization || "";
+  const match = header.match(/^Bearer\\s+(.+)$/i);
+  if (!match) return null;
+  const response = await fetch(`${supabaseUrl}/auth/v1/user`, {
+    headers: {
+      apikey: supabasePublishableKey,
+      Authorization: `Bearer ${match[1]}`
+    }
+  });
+  if (!response.ok) return null;
+  const user = await response.json().catch(() => null);
+  if (!user || !user.id || !user.email || !user.email_confirmed_at) return null;
+  return user;
+}
+
 // Health check
 app.get("/", (req, res) => {
   res.json({
@@ -117,6 +135,10 @@ const trustedProducts = {
 app.post("/create-order", async (req, res) => {
   try {
     checkConfiguration();
+    const authUser = await getAuthenticatedUser(req);
+    if (!authUser) {
+      return res.status(401).json({ success: false, message: "Please sign in with your verified email first." });
+    }
 
     const {
       items,
@@ -250,7 +272,8 @@ app.post("/create-order", async (req, res) => {
       body: JSON.stringify([{
         customer_name: customerName.trim(),
         customer_phone: phone,
-        customer_email: customerEmail || null,
+        customer_email: authUser.email,
+        user_id: authUser.id,
         delivery_address: deliveryAddress || null,
         product_name: orderItems.map(
           item => `${item.name} x ${item.quantity}`
@@ -283,7 +306,8 @@ app.post("/create-order", async (req, res) => {
         amount: order.amount,
         currency: order.currency
       },
-      database_order_id: dbOrder[0].id
+      database_order_id: dbOrder[0].id,
+      order_number: dbOrder[0].order_number
     });
 
   } catch (error) {
@@ -296,6 +320,59 @@ app.post("/create-order", async (req, res) => {
       success: false,
       message: "Could not create and save order"
     });
+  }
+});
+
+
+// Save WhatsApp cart orders as pending customer-owned orders for tracking.
+app.post("/create-contact-order", async (req, res) => {
+  try {
+    checkConfiguration();
+    const authUser = await getAuthenticatedUser(req);
+    if (!authUser) {
+      return res.status(401).json({ success: false, message: "Please sign in with your verified email first." });
+    }
+    const { items, customerName, customerPhone, deliveryAddress } = req.body || {};
+    const phone = String(customerPhone || "").replace(/\\D/g, "");
+    if (typeof customerName !== "string" || customerName.trim().length < 2 || customerName.trim().length > 100 ||
+        !/^\\d{10,15}$/.test(phone) ||
+        typeof deliveryAddress !== "string" || deliveryAddress.trim().length < 5 || deliveryAddress.length > 1000 ||
+        !Array.isArray(items) || items.length < 1 || items.length > 20) {
+      return res.status(400).json({ success: false, message: "Please check your name, phone, address and cart." });
+    }
+    let totalRupees = 0;
+    const orderItems = [];
+    for (const item of items) {
+      if (!item || !Number.isSafeInteger(item.productId) || !Number.isSafeInteger(item.quantity) ||
+          item.quantity < 1 || item.quantity > 20 || !trustedProducts[item.productId]) {
+        return res.status(400).json({ success: false, message: "Invalid product or quantity." });
+      }
+      const product = trustedProducts[item.productId];
+      totalRupees += product.price * item.quantity;
+      orderItems.push({ name: product.name, quantity: item.quantity, price: product.price });
+    }
+    const saved = await supabaseRequest("orders", {
+      method: "POST",
+      body: JSON.stringify([{
+        user_id: authUser.id,
+        customer_name: customerName.trim(),
+        customer_phone: phone,
+        customer_email: authUser.email,
+        delivery_address: deliveryAddress.trim(),
+        product_name: orderItems.map(item => `${item.name} x ${item.quantity}`).join(", "),
+        quantity: orderItems.reduce((sum, item) => sum + item.quantity, 0),
+        unit_price: orderItems.length === 1 ? orderItems[0].price : 0,
+        total_amount: totalRupees,
+        order_status: "pending",
+        payment_status: "not_required",
+        notes: "WhatsApp order request"
+      }])
+    });
+    if (!saved || !saved.length) throw new Error("Order was not saved");
+    return res.json({ success: true, order_number: saved[0].order_number });
+  } catch (error) {
+    console.error("WhatsApp order save failed:", error.message || "Unknown error");
+    return res.status(500).json({ success: false, message: "Could not save order request" });
   }
 });
 
