@@ -362,7 +362,7 @@ app.post("/create-contact-order", async (req, res) => {
         user_id: authUser.id,
         customer_name: customerName.trim(),
         customer_phone: phone,
-        customer_email: authUser.email,
+        customer_email: authUser.email || null,
         delivery_address: deliveryAddress.trim(),
         product_name: orderItems.map(item => `${item.name} x ${item.quantity}`).join(", "),
         quantity: orderItems.reduce((sum, item) => sum + item.quantity, 0),
