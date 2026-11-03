@@ -101,7 +101,7 @@ async function supabaseRequest(path, options = {}) {
 // Verify the signed-in customer with Supabase Auth. Never trust a browser-supplied user ID.
 async function getAuthenticatedUser(req) {
   const header = req.headers.authorization || "";
-  const match = header.match(/^Bearer\\s+(.+)$/i);
+  const match = header.match(/^Bearer\s+(.+)$/i);
   if (!match) return null;
   const response = await fetch(`${supabaseUrl}/auth/v1/user`, {
     headers: {
@@ -335,9 +335,9 @@ app.post("/create-contact-order", async (req, res) => {
       return res.status(401).json({ success: false, message: "Please sign in with your verified email first." });
     }
     const { items, customerName, customerPhone, deliveryAddress } = req.body || {};
-    const phone = String(customerPhone || "").replace(/\\D/g, "");
+    const phone = String(customerPhone || "").replace(/\D/g, "");
     if (typeof customerName !== "string" || customerName.trim().length < 2 || customerName.trim().length > 100 ||
-        !/^\\d{10,15}$/.test(phone) ||
+        !/^\d{10,15}$/.test(phone) ||
         typeof deliveryAddress !== "string" || deliveryAddress.trim().length < 5 || deliveryAddress.length > 1000 ||
         !Array.isArray(items) || items.length < 1 || items.length > 20) {
       return res.status(400).json({ success: false, message: "Please check your name, phone, address and cart." });
