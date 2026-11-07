@@ -310,7 +310,8 @@ app.post("/create-order", async (req, res) => {
         currency: order.currency
       },
       database_order_id: dbOrder[0].id,
-      order_number: dbOrder[0].order_number
+      order_number: dbOrder[0].order_number,
+      tracking_code: dbOrder[0].tracking_code
     });
 
   } catch (error) {
@@ -374,7 +375,7 @@ app.post("/create-contact-order", async (req, res) => {
       }])
     });
     if (!saved || !saved.length) throw new Error("Order was not saved");
-    return res.json({ success: true, order_number: saved[0].order_number });
+    return res.json({ success: true, order_number: saved[0].order_number, tracking_code: saved[0].tracking_code });
   } catch (error) {
     console.error("WhatsApp order save failed:", error.message || "Unknown error");
     return res.status(500).json({ success: false, message: "Could not save order request" });
@@ -422,16 +423,14 @@ app.post("/track-order", async (req, res) => {
       return res.status(503).json({ success: false, message: "Order tracking is temporarily unavailable." });
     }
 
-    const orderNumber = String((req.body || {}).orderNumber || "").trim().replace(/^#\s*/, "").replace(/\s+/g, "");
+    const trackingCode = String((req.body || {}).trackingCode || "").trim().toUpperCase().replace(/\s+/g, "");
     const phone = String((req.body || {}).customerPhone || "").replace(/\D/g, "");
 
-    if (!/^\d{1,19}$/.test(orderNumber) ||
-        BigInt(orderNumber) < 1n ||
-        BigInt(orderNumber) > 9223372036854775807n ||
+    if (!/^ROYAL-STEEL-[0-9A-F]{16}$/.test(trackingCode) ||
         !/^\d{10,15}$/.test(phone)) {
       return res.status(400).json({
         success: false,
-        message: "Enter a valid Order ID and the mobile number used when placing the order."
+        message: "Enter a valid ROYAL-STEEL Tracking ID and the mobile number used when placing the order."
       });
     }
 
@@ -445,8 +444,8 @@ app.post("/track-order", async (req, res) => {
     }
 
     const query = new URLSearchParams({
-      select: "order_number,product_name,quantity,total_amount,order_status,payment_status,created_at,updated_at",
-      order_number: "eq." + orderNumber,
+      select: "tracking_code,product_name,quantity,total_amount,order_status,payment_status,created_at,updated_at",
+      tracking_code: "eq." + trackingCode,
       customer_phone: "eq." + phone,
       limit: "2"
     });
@@ -464,7 +463,7 @@ app.post("/track-order", async (req, res) => {
     return res.json({
       success: true,
       order: {
-        order_number: order.order_number,
+        tracking_code: order.tracking_code,
         product_name: order.product_name,
         quantity: order.quantity,
         total_amount: order.total_amount,
@@ -556,7 +555,7 @@ app.post("/verify-payment", async (req, res) => {
 
     // Find matching saved order
     const query = new URLSearchParams({
-      select: "id",
+      select: "id,tracking_code",
       razorpay_order_id: `eq.${razorpay_order_id}`,
       limit: "1"
     });
@@ -597,7 +596,8 @@ app.post("/verify-payment", async (req, res) => {
       verified: true,
       message: "Payment verified and order saved",
       payment_id: payment.id,
-      order_id: order.id
+      order_id: order.id,
+      tracking_code: existing[0].tracking_code
     });
 
   } catch (error) {
