@@ -381,6 +381,108 @@ app.post("/create-contact-order", async (req, res) => {
   }
 });
 
+// Public order-status lookup. A matching order number + checkout phone is required.
+const trackingLookupBuckets = new Map();
+const TRACKING_WINDOW_MS = 10 * 60 * 1000;
+const TRACKING_MAX_ATTEMPTS = 8;
+
+function checkTrackingLookupLimit(req, phone) {
+  const forwarded = String(req.headers["x-forwarded-for"] || "").split(",")[0].trim();
+  const ip = forwarded || req.ip || req.socket?.remoteAddress || "unknown";
+  const key = ip + ":" + phone;
+  const now = Date.now();
+  let bucket = trackingLookupBuckets.get(key);
+
+  if (!bucket || now - bucket.startedAt >= TRACKING_WINDOW_MS) {
+    bucket = { startedAt: now, count: 0 };
+  }
+
+  if (bucket.count >= TRACKING_MAX_ATTEMPTS) {
+    const retryAfter = Math.max(1, Math.ceil((TRACKING_WINDOW_MS - (now - bucket.startedAt)) / 1000));
+    return retryAfter;
+  }
+
+  bucket.count += 1;
+  trackingLookupBuckets.set(key, bucket);
+
+  if (trackingLookupBuckets.size > 3000) {
+    for (const [entryKey, entry] of trackingLookupBuckets) {
+      if (now - entry.startedAt >= TRACKING_WINDOW_MS) trackingLookupBuckets.delete(entryKey);
+    }
+  }
+
+  return 0;
+}
+
+app.post("/track-order", async (req, res) => {
+  res.setHeader("Cache-Control", "no-store, max-age=0");
+
+  try {
+    if (!supabaseUrl || !supabaseSecret) {
+      return res.status(503).json({ success: false, message: "Order tracking is temporarily unavailable." });
+    }
+
+    const orderNumber = String((req.body || {}).orderNumber || "").trim();
+    const phone = String((req.body || {}).customerPhone || "").replace(/\D/g, "");
+
+    if (!/^\d{1,19}$/.test(orderNumber) ||
+        BigInt(orderNumber) < 1n ||
+        BigInt(orderNumber) > 9223372036854775807n ||
+        !/^\d{10,15}$/.test(phone)) {
+      return res.status(400).json({
+        success: false,
+        message: "Enter a valid Order ID and the mobile number used when placing the order."
+      });
+    }
+
+    const retryAfter = checkTrackingLookupLimit(req, phone);
+    if (retryAfter > 0) {
+      res.setHeader("Retry-After", String(retryAfter));
+      return res.status(429).json({
+        success: false,
+        message: "Too many tracking attempts. Please try again after a few minutes."
+      });
+    }
+
+    const query = new URLSearchParams({
+      select: "order_number,product_name,quantity,total_amount,order_status,payment_status,created_at,updated_at",
+      order_number: "eq." + orderNumber,
+      customer_phone: "eq." + phone,
+      limit: "2"
+    });
+
+    const matches = await supabaseRequest("orders?" + query.toString(), { method: "GET" });
+
+    if (!matches || matches.length !== 1) {
+      return res.status(404).json({
+        success: false,
+        message: "Order not found. Check the Order ID and mobile number, then try again."
+      });
+    }
+
+    const order = matches[0];
+    return res.json({
+      success: true,
+      order: {
+        order_number: order.order_number,
+        product_name: order.product_name,
+        quantity: order.quantity,
+        total_amount: order.total_amount,
+        order_status: order.order_status,
+        payment_status: order.payment_status,
+        created_at: order.created_at,
+        updated_at: order.updated_at
+      }
+    });
+  } catch (error) {
+    console.error("Order tracking lookup failed:", error.message || "Unknown error");
+    return res.status(500).json({
+      success: false,
+      message: "Unable to look up this order right now. Please try again later."
+    });
+  }
+});
+
 // Verify payment and update Supabase
 app.post("/verify-payment", async (req, res) => {
   try {
