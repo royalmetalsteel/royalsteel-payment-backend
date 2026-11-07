@@ -422,7 +422,7 @@ app.post("/track-order", async (req, res) => {
       return res.status(503).json({ success: false, message: "Order tracking is temporarily unavailable." });
     }
 
-    const orderNumber = String((req.body || {}).orderNumber || "").trim();
+    const orderNumber = String((req.body || {}).orderNumber || "").trim().replace(/^#\s*/, "").replace(/\s+/g, "");
     const phone = String((req.body || {}).customerPhone || "").replace(/\D/g, "");
 
     if (!/^\d{1,19}$/.test(orderNumber) ||
