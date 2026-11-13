@@ -6,7 +6,7 @@ const app = express();
 app.disable('x-powered-by');
 app.set('trust proxy', 1);
 
-const SUPABASE_URL = String(process.env.SUPABASE_URL || '').replace(/\/$/, '');
+const SUPABASE_URL = String(process.env.SUPABASE_URL || 'https://xbetpogdplnlgfafjfmo.supabase.co').replace(/\/$/, '');
 const SUPABASE_SECRET = process.env.SUPABASE_SECRET_KEY;
 const SUPABASE_PUBLIC = process.env.SUPABASE_PUBLISHABLE_KEY || process.env.SUPABASE_ANON_KEY || 'sb_publishable_aYvm5zJJRwM7qUaXQht-PQ_Whw5ZCzp';
 const RAZORPAY_KEY_ID = process.env.RAZORPAY_KEY_ID;
@@ -37,6 +37,13 @@ async function db(path,options={}){
   if(!r.ok){console.error('Supabase REST error',r.status,data&&data.message);throw new Error('Database operation failed');}
   return data;
 }
+async function dbPublic(path,options={}){
+  if(!SUPABASE_URL||!SUPABASE_PUBLIC)throw new Error('Public Supabase configuration is missing');
+  const r=await fetch(`${SUPABASE_URL}/rest/v1/${path}`,{...options,headers:{apikey:SUPABASE_PUBLIC,Authorization:`Bearer ${SUPABASE_PUBLIC}`,'Content-Type':'application/json',...(options.headers||{})}});
+  const data=await r.json().catch(()=>null);
+  if(!r.ok){console.error('Public catalogue request failed',r.status,data&&data.message);throw new Error('Public catalogue read failed');}
+  return data;
+}
 async function authUser(req){
   const m=String(req.headers.authorization||'').match(/^Bearer\s+(.+)$/i);if(!m)return null;
   const r=await fetch(`${SUPABASE_URL}/auth/v1/user`,{headers:{apikey:SUPABASE_PUBLIC,Authorization:`Bearer ${m[1]}`}});
@@ -51,7 +58,7 @@ async function adminUser(req){
 }
 async function catalog(){
   const q=new URLSearchParams({select:'id,slug,name,category,description,image_url,price,stock_quantity,sku,is_active,is_featured,updated_at',slug:`in.(${SLUGS.join(',')})`,is_active:'eq.true',limit:'100'});
-  const rows=await db(`products?${q}`);const map=new Map((rows||[]).map(p=>[p.slug,p]));
+  const rows=await dbPublic(`products?${q}`);const map=new Map((rows||[]).map(p=>[p.slug,p]));
   return SLUGS.map((slug,i)=>{const p=map.get(slug);return p?{productId:i+1,databaseId:p.id,slug:p.slug,name:p.name,category:p.category,description:p.description||'',imageUrl:p.image_url||null,price:Number(p.price||0),stockQuantity:p.stock_quantity,sku:p.sku,isActive:!!p.is_active,updatedAt:p.updated_at}:null;}).filter(Boolean);
 }
 function customerFrom(body){
